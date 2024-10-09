@@ -30,7 +30,7 @@ namespace IdentityModel.OidcClient
             _crypto = new CryptoHelper(options);
         }
 
-        public async Task<AuthorizeResult> AuthorizeAsync(AuthorizeRequest request,
+        public async Task<AuthorizeResult> AuthorizeAsync(AuthorizeRequest request, bool usePKCE,
             CancellationToken cancellationToken = default)
         {
             _logger.LogTrace("AuthorizeAsync");
@@ -42,7 +42,7 @@ namespace IdentityModel.OidcClient
 
             AuthorizeResult result = new AuthorizeResult
             {
-                State = await CreateAuthorizeStateAsync(request.ExtraParameters)
+                State = await CreateAuthorizeStateAsync(request.ExtraParameters, usePKCE)
             };
 
             if(result.State.IsError)
@@ -91,37 +91,46 @@ namespace IdentityModel.OidcClient
             return await _options.Browser.InvokeAsync(browserOptions, cancellationToken);
         }
 
-        public async Task<AuthorizeState> CreateAuthorizeStateAsync(Parameters frontChannelParameters)
+        public async Task<AuthorizeState> CreateAuthorizeStateAsync(Parameters frontChannelParameters, bool usePKCE)
         {
             _logger.LogTrace("CreateAuthorizeStateAsync");
 
-            var pkce = _crypto.CreatePkceData();
+            var pkce = usePKCE ? _crypto.CreatePkceData() : null;
+
+
 
             var state = new AuthorizeState
             {
                 State = _crypto.CreateState(_options.StateLength),
                 RedirectUri = _options.RedirectUri,
-                CodeVerifier = pkce.CodeVerifier,
+                CodeVerifier = usePKCE ? pkce.CodeVerifier : null,
             };
 
-            if(_options.ProviderInformation.PushedAuthorizationRequestEndpoint.IsPresent() &&
-                !_options.DisablePushedAuthorization)
+            if (usePKCE)
             {
-                _logger.LogDebug("The IdentityProvider contains a pushed authorization request endpoint. Automatically pushing authorization parameters. Use DisablePushedAuthorization to opt out.");
-                var parResponse = await PushAuthorizationRequestAsync(state.State, pkce.CodeChallenge, frontChannelParameters);
-                if(parResponse.IsError)
+                if (_options.ProviderInformation.PushedAuthorizationRequestEndpoint.IsPresent() &&
+                !_options.DisablePushedAuthorization)
                 {
-                    _logger.LogError("Failed to push authorization parameters");
+                    _logger.LogDebug("The IdentityProvider contains a pushed authorization request endpoint. Automatically pushing authorization parameters. Use DisablePushedAuthorization to opt out.");
+                    var parResponse = await PushAuthorizationRequestAsync(state.State, pkce.CodeChallenge, frontChannelParameters);
+                    if (parResponse.IsError)
+                    {
+                        _logger.LogError("Failed to push authorization parameters");
 
-                    state.Error = parResponse.Error;
-                    state.ErrorDescription = "Failed to push authorization parameters";
-                    return state;
+                        state.Error = parResponse.Error;
+                        state.ErrorDescription = "Failed to push authorization parameters";
+                        return state;
+                    }
+                    state.StartUrl = CreateAuthorizeUrl(parResponse.RequestUri, _options.ClientId);
                 }
-                state.StartUrl = CreateAuthorizeUrl(parResponse.RequestUri, _options.ClientId);
+                else
+                {
+                    state.StartUrl = CreateAuthorizeUrl(state.State, pkce.CodeChallenge, frontChannelParameters);
+                }
             }
             else
             {
-                state.StartUrl = CreateAuthorizeUrl(state.State, pkce.CodeChallenge, frontChannelParameters);
+                state.StartUrl = CreateAuthorizeUrl(state.State, frontChannelParameters);
             }
 
             _logger.LogDebug(LogSerializer.Serialize(state));
@@ -156,6 +165,17 @@ namespace IdentityModel.OidcClient
             _logger.LogTrace("CreateAuthorizeUrl");
 
             var parameters = CreateAuthorizeParameters(state, codeChallenge, frontChannelParameters);
+            var request = new RequestUrl(_options.ProviderInformation.AuthorizeEndpoint);
+
+            return request.Create(parameters);
+        }
+
+        internal string CreateAuthorizeUrl(string state,
+            Parameters frontChannelParameters)
+        {
+            _logger.LogTrace("CreateAuthorizeUrl");
+
+            var parameters = CreateAuthorizeParameters(state, frontChannelParameters);
             var request = new RequestUrl(_options.ProviderInformation.AuthorizeEndpoint);
 
             return request.Create(parameters);
@@ -198,6 +218,52 @@ namespace IdentityModel.OidcClient
                 { OidcConstants.AuthorizeRequest.State, state },
                 { OidcConstants.AuthorizeRequest.CodeChallenge, codeChallenge },
                 { OidcConstants.AuthorizeRequest.CodeChallengeMethod, OidcConstants.CodeChallengeMethods.Sha256 },
+            };
+
+            if (_options.ClientId.IsPresent())
+            {
+                parameters.Add(OidcConstants.AuthorizeRequest.ClientId, _options.ClientId);
+            }
+
+            if (_options.Scope.IsPresent())
+            {
+                parameters.Add(OidcConstants.AuthorizeRequest.Scope, _options.Scope);
+            }
+
+            if (_options.Resource.Any())
+            {
+                foreach (var resource in _options.Resource)
+                {
+                    parameters.Add(OidcConstants.AuthorizeRequest.Resource, resource);
+                }
+            }
+
+            if (_options.RedirectUri.IsPresent())
+            {
+                parameters.Add(OidcConstants.AuthorizeRequest.RedirectUri, _options.RedirectUri);
+            }
+
+            if (frontChannelParameters != null)
+            {
+                foreach (var entry in frontChannelParameters)
+                {
+                    parameters.Add(entry.Key, entry.Value);
+                }
+            }
+
+            return parameters;
+        }
+
+        internal Parameters CreateAuthorizeParameters(
+            string state,
+            Parameters frontChannelParameters)
+        {
+            _logger.LogTrace("CreateAuthorizeParameters");
+
+            var parameters = new Parameters
+            {
+                { OidcConstants.AuthorizeRequest.ResponseType, OidcConstants.ResponseTypes.Code },
+                { OidcConstants.AuthorizeRequest.State, state },
             };
 
             if (_options.ClientId.IsPresent())

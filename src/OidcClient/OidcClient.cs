@@ -26,6 +26,7 @@ namespace IdentityModel.OidcClient
 
         private readonly bool _useDiscovery;
         private readonly ResponseProcessor _processor;
+        private string _authorizeUrl;
 
         /// <summary>
         /// Gets the options.
@@ -59,15 +60,19 @@ namespace IdentityModel.OidcClient
         /// <summary>
         /// Starts a login.
         /// </summary>
+        /// <param name="usePKCE">Use PKCE.</param>
+        /// <param name="authorizeUrl">Custom authorize url.</param>
         /// <param name="request">The login request.</param>
         /// <param name="cancellationToken">A token that can be used to cancel the request</param>
         /// <returns></returns>
-        public virtual async Task<LoginResult> LoginAsync(LoginRequest request = null, CancellationToken cancellationToken = default)
+        public virtual async Task<LoginResult> LoginAsync(bool usePKCE, string authorizeUrl = null, LoginRequest request = null, CancellationToken cancellationToken = default)
         {
             _logger.LogTrace("LoginAsync");
             _logger.LogInformation("Starting authentication request.");
 
             if (request == null) request = new LoginRequest();
+
+            _authorizeUrl = authorizeUrl;
 
             await EnsureConfigurationAsync(cancellationToken);
 
@@ -76,7 +81,7 @@ namespace IdentityModel.OidcClient
                 DisplayMode = request.BrowserDisplayMode,
                 Timeout = request.BrowserTimeout,
                 ExtraParameters = request.FrontChannelExtraParameters
-            }, cancellationToken);
+            }, usePKCE, cancellationToken);
 
             if (authorizeResult.IsError)
             {
@@ -426,7 +431,7 @@ namespace IdentityModel.OidcClient
                     IssuerName = disco.Issuer,
                     KeySet = disco.KeySet,
 
-                    AuthorizeEndpoint = disco.AuthorizeEndpoint,
+                    AuthorizeEndpoint = _authorizeUrl,
                     PushedAuthorizationRequestEndpoint = disco.PushedAuthorizationRequestEndpoint,
                     TokenEndpoint = disco.TokenEndpoint,
                     EndSessionEndpoint = disco.EndSessionEndpoint,
